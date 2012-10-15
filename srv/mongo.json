@@ -1,0 +1,8 @@
+{
+	"address":"mongo-persistor",
+	"host":"alex.mongohq.com",
+	"port":10088,
+	"username":"gvm",
+	"password":"g00ba11",
+	"db_name":"gvm_test"
+}
