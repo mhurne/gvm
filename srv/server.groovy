@@ -19,6 +19,7 @@ container.deployModule('vertx.mongo-persistor-v1.2', config)
 
 def templateEngine = new SimpleTemplateEngine()
 
+def appCmd = [action:"find", collection:"application", matcher:[_id:1]]
 
 //
 // route matcher implementations
@@ -27,8 +28,14 @@ def templateEngine = new SimpleTemplateEngine()
 def rm = new RouteMatcher()
 
 rm.get("/") { req ->
-	addPlainTextHeader req
-	req.response.sendFile('srv/scripts/install.sh')
+	vertx.eventBus.send("mongo-persistor", appCmd){ msg ->
+		def gvmHost = "${msg.body.results[0].gvmHost}"
+		def placeHolders = [HOST_PLACEHOLDER:gvmHost]
+		def script = new File('srv/scripts/install.sh')
+		def content = replacePlaceHolders(script.text, placeHolders)
+		addPlainTextHeader req
+		req.response.end content
+	}
 }
 
 rm.get("/selfupdate") { req ->
@@ -42,22 +49,24 @@ rm.get("/alive") { req ->
 }
 
 rm.get("/res") { req ->
-	def cmd = [action:"find", collection:"application", matcher:[_id:1]]
-	vertx.eventBus.send("mongo-persistor", cmd){ msg ->
-		addPlainTextHeader req
-		def gvmVersion = msg.body.results[0].gvmVersion
+	vertx.eventBus.send("mongo-persistor", appCmd){ msg ->
+		def gvmVersion = "${msg.body.results[0].gvmVersion}"
+		def gvmHost = "${msg.body.results[0].gvmHost}"
+		def vertxVersion = "${msg.body.results[0].vertxVersion}"
+		def application = [gvmVersion:gvmVersion, gvmHost:gvmHost, vertxVersion:vertxVersion]
+
 		log 'initialise', 'gvm', gvmVersion, req
+
+		def files = []
+		files << new File('srv/scripts/gvm')
+		files << new File('srv/scripts/gvm-init.sh')
+		def zipFile = prepareArchive(files, application)
+
+		req.response.putHeader("Content-Type", "application/zip")
+		req.response.sendFile zipFile.absolutePath
+
+		zipFile.delete()
 	}
-
-	def files = []
-	files << new File('srv/scripts/gvm')
-	files << new File('srv/scripts/gvm-init.sh')
-	def zipFile = buildZip(files)
-
-	req.response.putHeader("Content-Type", "application/zip")
-	req.response.sendFile zipFile.absolutePath
-
-	zipFile.delete()
 }
 
 rm.get("/candidates") { req ->
@@ -232,19 +241,27 @@ private log(command, candidate, version, req){
 	vertx.eventBus.send 'mongo-persistor', cmd
 }
 
-private buildZip(files){
+private prepareArchive(files, app){
+	def placeHolders = [HOST_PLACEHOLDER: app.gvmHost, VERSION_PLACEHOLDER: app.gvmVersion]
 	def zipFile = File.createTempFile('gvm-', '.zip')
 	def zos = new ZipOutputStream(new FileOutputStream(zipFile)) 
 	files.each { file ->
 		def zipEntry = new ZipEntry(file.name)
 		zos.putNextEntry zipEntry
-		zos << new FileInputStream(file)
+		def content = replacePlaceHolders(file.text, placeHolders)
+		zos.write content.bytes
+		zos.closeEntry()
 	}
 	zos.close()
-
 	zipFile
 }
 
+private replacePlaceHolders(String content, Map placeHolders){
+	placeHolders.each { key, value ->
+		content = content.replace(key, value)
+	}
+	content
+}
 
 //
 // startup server
